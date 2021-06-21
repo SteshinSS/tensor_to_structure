@@ -11,9 +11,9 @@ Coordinates = namedtuple('Coordinates', ['x', 'y', 'z'])
 class Atom:
     """Structure for holding coordinates and atom types."""
 
-    def __init__(self, coordinates, atom_type):
-        self.coordinate = coordinates
-        self.atom_type = atom_type
+    def __init__(self, coordinates, atomic_number):
+        self.coordinates = coordinates
+        self.atomic_number = atomic_number
 
 
 class Molecule:
@@ -37,14 +37,13 @@ def molecule_to_tensor(molecule, **kwargs):
 
     molecule -- Molecule object
     """
+
     from rdkit import Chem
     from moleculekit.smallmol.smallmol import SmallMol
     from moleculekit.tools.voxeldescriptors import getVoxelDescriptors
 
-    molecule = Chem.AddHs(molecule)
-    Chem.AllChem.EmbedMolecule(molecule)
-    Chem.AllChem.MMFFOptimizeMolecule(molecule)
-    molecule = SmallMol(molecule)
+    molecule = molecule.to_rdkit()
+    molecule = SmallMol(molecule, fixHs=False)
     vox, center, shape = getVoxelDescriptors(molecule, voxelsize=0.5, buffer=1, boxsize=[20, 20, 20], center=[0,0,0])
     vox = vox.reshape((40, 40, 40, 8))
     return vox
