@@ -1,5 +1,8 @@
+import copy
+
 import tensorflow as tf
 import numpy as np  # maybe it is better to use tensorflow only
+from scipy.optimize import minimize
 import heapq
 from collections import namedtuple
 from copy import deepcopy
@@ -91,13 +94,13 @@ class Fitter:
         self.max_atom_by_step = 2
 
         # Maximal numbers of best molecules that go to the next bfs step
-        self.max_molecules_by_step = 3
+        self.max_molecules_by_step = 2
 
         # Minimal density for atom detection
-        self.threshold = 0.3
+        self.threshold = 0.8
 
         # Maximal number of atoms in molecule
-        self.max_atoms = 30
+        self.max_atoms = 20
 
         # Function, that takes Molecule object and return its density tensor.
         self.molecule_to_tensor = molecule_to_tensor_func
@@ -108,6 +111,12 @@ class Fitter:
         # Dict from atom type to AtomDescriptors
         self.atom_type_to_descriptor = atom_type_to_descriptor
 
+        # Maximum number of optimization iterations
+        self.optimization_maxiter = 50
+
+        # Tolerance of the optimizer
+        self.optimization_tolerance = 0.01
+
         if verbose == 3:
             parent_logger.setLevel(logging.DEBUG)
         parent_logger.debug("Fitter is initialized.")
@@ -116,6 +125,7 @@ class Fitter:
         logging.getLogger(__name__ + ".add_atoms").setLevel(logging.CRITICAL)
         logging.getLogger(__name__ + ".get_max_indices").setLevel(logging.CRITICAL)
         logging.getLogger(__name__ + ".index_to_coordinates").setLevel(logging.CRITICAL)
+        logging.getLogger(__name__ + ".optimize_molecule").setLevel(logging.CRITICAL)
         logging.getLogger(__name__ + ".get_possible_atom_types").setLevel(logging.CRITICAL)
         logging.getLogger(__name__ + ".select_good_molecules").setLevel(logging.CRITICAL)
 
@@ -127,7 +137,10 @@ class Fitter:
         """
         best_molecules = MoleculeHeap(self.best_max)
         current_molecule = Molecule()
-        self._bfs(tensor, current_molecule, best_molecules, **kwargs)
+        try:
+            self._bfs(tensor, current_molecule, best_molecules, **kwargs)
+        except KeyboardInterrupt:
+            pass
         return best_molecules.get_pairs()
 
     def _bfs(self, original_tensor, current_molecule, best_molecules, **kwargs):
@@ -154,8 +167,8 @@ class Fitter:
         # Molecules for the next bfs step
         good_molecules = []
         for molecule in new_molecules:
-            #molecule, norm = self._optimize_molecule(molecule, original_tensor)
-            norm = tf.norm(original_tensor - self.molecule_to_tensor(molecule))
+            molecule, norm = self._optimize_molecule(molecule, original_tensor)
+            #norm = tf.norm(original_tensor - self.molecule_to_tensor(molecule))
             logger.debug("Molecule: " + str(molecule) + " Norm: " + str(norm))
             if norm < current_norm:
                 good_molecules.append((molecule, norm))
@@ -260,10 +273,60 @@ class Fitter:
         return possible_atom_types
 
 
-    def _optimize_molecule(self, molecule, tensor):
+    def _optimize_molecule(self, molecule, original_tensor, **kwargs):
         """Optimize coordinates of atoms in the molecule, so its density is looks like the original tensor.
         """
-        pass
+        logger = logging.getLogger(__name__ + ".optimize_molecule")
+
+        def norm_of_difference(coordinates, *args):
+            original_tensor, molecule, molecule_to_tensor_func = args
+            molecule = copy.deepcopy(molecule)
+            for i, atom in enumerate(molecule.atoms):
+                new_coordinates = Coordinates(coordinates[3 * i + 0],
+                                              coordinates[3 * i + 1],
+                                              coordinates[3 * i + 2])
+                atom.coordinates = new_coordinates
+            result_tensor = molecule_to_tensor_func(molecule)
+            return float(tf.norm(original_tensor - result_tensor))
+
+        x_bond, y_bond, z_bond = (np.array(original_tensor.shape[:-1])  / 2) * self.voxel_size
+
+        coordinates = np.zeros(3 * len(molecule))
+        bounds = []
+        for i, atom in enumerate(molecule.atoms):
+            coordinates[3 * i + 0] = atom.coordinates[0]
+            bounds.append((-x_bond, x_bond))
+
+            coordinates[3 * i + 1] = atom.coordinates[1]
+            bounds.append((-y_bond, y_bond))
+
+            coordinates[3 * i + 2] = atom.coordinates[2]
+            bounds.append((-z_bond, z_bond))
+
+        logger.debug("Initial coordinates: " + str(coordinates))
+        logger.debug("Initial bounds: " + str(bounds))
+        current_norm = norm_of_difference(coordinates, original_tensor, molecule, self.molecule_to_tensor)
+        logger.info("Initial norm: " + str(current_norm))
+
+        # bounds are supported by Nelder-Mead, L-BFGS-B, TNC, SLSQP, Powell, and trust-constr methods.
+        result = minimize(fun=norm_of_difference,
+                          x0=coordinates,
+                          args=(original_tensor, molecule, self.molecule_to_tensor),
+                          bounds=bounds,
+                          method="Nelder-Mead",
+                          tol=self.optimization_tolerance,
+                          options={'maxiter' : self.optimization_maxiter})
+
+        for i, atom in enumerate(molecule.atoms):
+            new_coordinates = Coordinates(result.x[3 * i + 0],
+                                          result.x[3 * i + 1],
+                                          result.x[3 * i + 2])
+            atom.coordinates = new_coordinates
+        logger.info("Final norm: " + str(result.fun))
+        logger.debug("Total iterations: " + str(result.nit))
+        logger.debug("Optimizer message: " + result.message)
+
+        return molecule, result.fun
 
     def _select_good_molecules(self, good_molecules, best_molecules):
         """Select molecules for the next round of bfs.
