@@ -6,7 +6,7 @@ from rdkit.Chem import AllChem
 import matplotlib.pyplot as plt
 
 atom_type_to_descriptor = {
-    1: AtomDescriptor(0, set([])),
+    1: AtomDescriptor(1, {4}),
     6: AtomDescriptor(1.4, {3, 4}),
     7: AtomDescriptor(1.35, {2, 4}),
     8: AtomDescriptor(1.3, {2, 3, 4}),
