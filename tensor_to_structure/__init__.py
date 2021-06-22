@@ -58,7 +58,8 @@ class MoleculeHeap:
 
 
 class Fitter:
-    """Transforms density tensors into structs."""
+    """Transforms density tensors into structs.
+    Haven't been tested for non-square tensors."""
 
     def __init__(self, molecule_to_tensor_func, atom_type_to_descriptor):
         """Set parameters."""
@@ -137,12 +138,12 @@ class Fitter:
         current_tensor -- Tensor of the difference between the original tensor and the density tensor of the current_molecule
         """
 
-        # Indexes of maximal density points
-        max_indexes = self._get_max_indexes(current_tensor)
+        # Indices of maximal density points
+        max_indices = self._get_max_indices(current_tensor)
 
         molecules = []
         last_layer_molecules = [current_molecule]
-        for index in max_indexes:
+        for index in max_indices:
             new_molecules = []
             new_atom_coordinates = self._index_to_coordinates(index, current_tensor.shape[:-1])
             possible_atom_types = self._get_possible_atom_types(current_tensor[index])
@@ -156,12 +157,46 @@ class Fitter:
             new_molecules.extend(new_molecules)
         return molecules
 
-    def _get_max_indexes(self, tensor):
-        """Return self.max_atoms_per_step points of maximal value in tensor."""
-        pass
+    def _get_max_indices(self, tensor):
+        """Return self.max_atoms_by_step points of maximal value in tensor.
+
+        Haven't been tested with non-square tensors."""
+
+        # Since we are looking for different xyz coordinates, select only maximum by channel axis
+        max_channels = tf.math.reduce_max(tensor, axis=-1)
+
+        # Haven't been tested for non-square shape
+        x_dim, y_dim, z_dim = max_channels.shape
+
+        max_channels = tf.reshape(max_channels, [-1])
+        _, top_k_indices = tf.math.top_k(max_channels, k=self.max_atom_by_step)
+
+        # For each maximal voxel, we will select voxels with the same density by random.
+        # If we have one such voxel, we will select it. But if there are many, it will increase sparseness of new atoms.
+        # It's especially important for the first step, since there are many 1.0 voxels.
+        flat_indices = []
+        for max_index in top_k_indices:
+            same_good_indices = tf.where(max_channels == max_channels[max_index])
+            same_good_indices = tf.random.shuffle(same_good_indices)
+            for index in same_good_indices:
+                if index not in flat_indices:
+                    flat_indices.append(index)
+                    break
+
+        # Return flat indices into 3D
+        result_indices = []
+        for index in flat_indices:
+            index = int(index)
+            idx_z = index % z_dim
+            index //= z_dim
+            idx_y = index % y_dim
+            index //= y_dim
+            idx_x = index
+            result_indices.append((idx_x, idx_y, idx_z))
+        return result_indices
 
     def _index_to_coordinates(self, index, tensor_shape):
-        """Converts tensor indexes into grid coordinates."""
+        """Converts tensor indices into grid coordinates."""
         xyz = index - (tensor_shape / 2)
         return Coordinates(*xyz)
 
