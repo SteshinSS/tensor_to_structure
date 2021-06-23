@@ -1,9 +1,10 @@
 import numpy as np
 from tensor_to_structure import AtomDescriptor, Molecule, Atom
-from moleculekit.tools.voxeldescriptors import getVoxelDescriptors
 from rdkit import Chem
 from rdkit.Chem import AllChem
 import matplotlib.pyplot as plt
+from mayavi import mlab
+
 
 atom_type_to_descriptor = {
     1: AtomDescriptor(1, {4}),
@@ -19,11 +20,13 @@ atom_type_to_descriptor = {
 }
 
 
-def molecule_to_tensor(molecule, **kwargs):
-    """Example function for conversion struct to tensor.
+def molecule_to_tensor_molkit(molecule, **kwargs):
+    """Example function for conversion struct to tensor by moleculekit.
 
     molecule -- Molecule object.
     """
+    from moleculekit.tools.voxeldescriptors import getVoxelDescriptors
+
     total_channels = 5
     molecule_channels = np.zeros((len(molecule), total_channels))
     for i, atom in enumerate(molecule.atoms):
@@ -55,7 +58,8 @@ def rdkit_to_molecule(rdkit_molecule):
 
     atoms = []
     for i, rd_atom in enumerate(rdkit_molecule.GetAtoms()):
-        atoms.append(Atom(rdkit_positions[i], rd_atom.GetAtomicNum()))
+        if rd_atom.GetAtomicNum() != 1:
+            atoms.append(Atom(rdkit_positions[i], rd_atom.GetAtomicNum()))
     return Molecule(atoms)
 
 
@@ -87,3 +91,25 @@ def plot_voxels(voxels, threshold=1.0):
     fig = plt.figure(figsize=(20, 20))
     ax = fig.add_subplot(projection='3d')
     ax.voxels(voxels[:, :, :, -1] == threshold, facecolors='red')
+
+
+def plot_side_by_side(before, after, channel=-1, zoom=2.3):
+    """Don't forget to run %gui qt"""
+    before = before[:, :, :, channel]
+    after = after[:, :, :, channel]
+    vmin = 0.01
+    fig_before = mlab.figure('Before', size=(500, 500))
+    mlab.pipeline.volume(mlab.pipeline.scalar_field(before), vmin=vmin)
+
+    fig_after = mlab.figure('After', size=(500, 500))
+    mlab.pipeline.volume(mlab.pipeline.scalar_field(after), vmin=vmin)
+
+    fig_before.scene.camera.zoom(zoom)
+    fig_after.scene.camera.zoom(zoom)
+    mlab.sync_camera(fig_before, fig_after)
+    mlab.sync_camera(fig_after, fig_before)
+
+
+def close_mlab():
+    mlab.close(all=True)
+

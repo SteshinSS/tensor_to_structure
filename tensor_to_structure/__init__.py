@@ -71,10 +71,12 @@ class MoleculeHeap:
             self.total_entries += 1
 
     def get_items(self):
-        return [molecule for (priority, _id, molecule) in self.heap]
+        items = [molecule for (priority, _id, molecule) in self.heap]
+        return items
 
     def get_pairs(self):
-        return [(-norm, molecule) for (norm, _id, molecule) in self.heap]
+        pairs = [(-norm, molecule) for (norm, _id, molecule) in self.heap]
+        return pairs
 
     def __len__(self):
         return len(self.heap)
@@ -94,10 +96,10 @@ class Fitter:
         self.max_atom_by_step = 2
 
         # Maximal numbers of best molecules that go to the next bfs step
-        self.max_molecules_by_step = 2
+        self.max_molecules_by_step = 10
 
         # Minimal density for atom detection
-        self.threshold = 0.8
+        self.threshold = 0.2
 
         # Maximal number of atoms in molecule
         self.max_atoms = 20
@@ -112,22 +114,22 @@ class Fitter:
         self.atom_type_to_descriptor = atom_type_to_descriptor
 
         # Maximum number of optimization iterations
-        self.optimization_maxiter = 50
+        self.optimization_maxiter = 100
 
         # Tolerance of the optimizer
-        self.optimization_tolerance = 0.01
+        self.optimization_tolerance = 0.001
 
         if verbose == 3:
             parent_logger.setLevel(logging.DEBUG)
         parent_logger.debug("Fitter is initialized.")
 
         logging.getLogger(__name__ + ".bfs").setLevel(logging.INFO)
-        logging.getLogger(__name__ + ".add_atoms").setLevel(logging.CRITICAL)
-        logging.getLogger(__name__ + ".get_max_indices").setLevel(logging.CRITICAL)
-        logging.getLogger(__name__ + ".index_to_coordinates").setLevel(logging.CRITICAL)
-        logging.getLogger(__name__ + ".optimize_molecule").setLevel(logging.CRITICAL)
-        logging.getLogger(__name__ + ".get_possible_atom_types").setLevel(logging.CRITICAL)
-        logging.getLogger(__name__ + ".select_good_molecules").setLevel(logging.CRITICAL)
+        logging.getLogger(__name__ + ".add_atoms").setLevel(logging.INFO)
+        logging.getLogger(__name__ + ".get_max_indices").setLevel(logging.INFO)
+        logging.getLogger(__name__ + ".index_to_coordinates").setLevel(logging.INFO)
+        logging.getLogger(__name__ + ".optimize_molecule").setLevel(logging.INFO)
+        logging.getLogger(__name__ + ".get_possible_atom_types").setLevel(logging.INFO)
+        logging.getLogger(__name__ + ".select_good_molecules").setLevel(logging.INFO)
 
     def tensor_to_molecule(self, tensor, **kwargs):
         """Transform density tensor into struct.
@@ -141,7 +143,8 @@ class Fitter:
             self._bfs(tensor, current_molecule, best_molecules, **kwargs)
         except KeyboardInterrupt:
             pass
-        return best_molecules.get_pairs()
+        pairs = best_molecules.get_pairs()
+        return sorted(pairs, key=lambda pair: pair[0])
 
     def _bfs(self, original_tensor, current_molecule, best_molecules, **kwargs):
         """BFS step for the fitting procedure.
@@ -154,12 +157,16 @@ class Fitter:
         best_molecules -- heap with top molecules.
         """
         logger = logging.getLogger(__name__ + '.bfs')
-        logger.info("BFS step. Depth:" + str(len(current_molecule)))
 
         # Tensor of the difference between the original tensor and the density tensor of the current_molecule
         current_tensor = original_tensor - self.molecule_to_tensor(current_molecule)
         current_norm = tf.norm(current_tensor)
-        logger.info("Current norm:" + str(current_norm))
+        logger.debug("Current norm:" + str(current_norm))
+        if best_molecules.heap:
+            current_best = str(-best_molecules.heap[-1][0])
+        else:
+            current_best = str(float(current_norm))
+        logger.info("BFS step. Depth: " + str(len(current_molecule)) + " Best norm: " + current_best)
 
         new_molecules = self._add_atoms(current_molecule, current_tensor)
         logger.debug("New molecules: " + str(len(new_molecules)) + ", " + str([str(molecule) for molecule in new_molecules]))
@@ -306,7 +313,7 @@ class Fitter:
         logger.debug("Initial coordinates: " + str(coordinates))
         logger.debug("Initial bounds: " + str(bounds))
         current_norm = norm_of_difference(coordinates, original_tensor, molecule, self.molecule_to_tensor)
-        logger.info("Initial norm: " + str(current_norm))
+        logger.debug("Initial norm: " + str(current_norm))
 
         # bounds are supported by Nelder-Mead, L-BFGS-B, TNC, SLSQP, Powell, and trust-constr methods.
         result = minimize(fun=norm_of_difference,
@@ -322,7 +329,7 @@ class Fitter:
                                           result.x[3 * i + 1],
                                           result.x[3 * i + 2])
             atom.coordinates = new_coordinates
-        logger.info("Final norm: " + str(result.fun))
+        logger.debug("Final norm: " + str(result.fun))
         logger.debug("Total iterations: " + str(result.nit))
         logger.debug("Optimizer message: " + result.message)
 
