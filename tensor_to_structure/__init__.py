@@ -1,5 +1,3 @@
-import copy
-
 import tensorflow as tf
 import numpy as np  # maybe it is better to use tensorflow only
 from scipy.optimize import minimize
@@ -71,11 +69,12 @@ class MoleculeHeap:
             self.total_entries += 1
 
     def get_items(self):
-        items = [molecule for (priority, _id, molecule) in self.heap]
-        return items
+        pairs = self.get_pairs()
+        return [molecule for (_, molecule) in pairs]
 
     def get_pairs(self):
         pairs = [(-norm, molecule) for (norm, _id, molecule) in self.heap]
+        pairs = sorted(pairs, key=lambda pair: pair[0])
         return pairs
 
     def __len__(self):
@@ -86,22 +85,26 @@ class Fitter:
     """Transforms density tensors into structs.
     Haven't been tested for non-square tensors."""
 
-    def __init__(self, molecule_to_tensor_func, atom_type_to_descriptor, verbose=3):
+    def __init__(self, molecule_to_tensor_func, atom_type_to_descriptor, verbose=2):
         """Set parameters."""
 
-        # Number of best molecules we hold
+        # Number of best molecules to hold.
         self.best_max = 10
 
-        # Maximal number of atoms we try to add each bfs step
-        self.max_atom_by_step = 2
+        # Maximal number of atoms we try to add each dfs step before the optimization.
+        # Reduce value to speed up conversion. Set to 1 to optimize right after adding
+        # an atom.
+        self.max_atom_by_dfs_step = 4
 
-        # Maximal numbers of best molecules that go to the next bfs step
-        self.max_molecules_by_step = 10
+        # Maximal number of best molecules that go to the next dfs step. Reduce value
+        # to speed up conversion.
+        self.max_molecules_by_dfs_step = 10
 
-        # Minimal density for atom detection
-        self.threshold = 0.2
+        # Minimal density for atom detection. Increase value to speed up conversion.
+        # Read Fitter._get_possible_atom_types on how to use it.
+        self.threshold = 0.5
 
-        # Maximal number of atoms in molecule
+        # Maximal number of atoms in molecule.
         self.max_atoms = 20
 
         # Function, that takes Molecule object and return its density tensor.
@@ -113,26 +116,36 @@ class Fitter:
         # Dict from atom type to AtomDescriptors
         self.atom_type_to_descriptor = atom_type_to_descriptor
 
+        # Turn on optimization by atom coordinates
+        self.optimization_is_on = True
+
         # Maximum number of optimization iterations
         self.optimization_maxiter = 100
 
         # Tolerance of the optimizer
-        self.optimization_tolerance = 0.001
+        self.optimization_tolerance = 0.0001
 
         if verbose == 3:
             parent_logger.setLevel(logging.DEBUG)
+        elif verbose == 2:
+            parent_logger.setLevel(logging.INFO)
+        elif verbose == 1:
+            parent_logger.setLevel(logging.ERROR)
+        else:
+            raise ValueError('Allowed verbose levels: [1, 2, 3], but ' + str(verbose) + ' provided.')
         parent_logger.debug("Fitter is initialized.")
 
-        logging.getLogger(__name__ + ".bfs").setLevel(logging.INFO)
-        logging.getLogger(__name__ + ".add_atoms").setLevel(logging.INFO)
-        logging.getLogger(__name__ + ".get_max_indices").setLevel(logging.INFO)
-        logging.getLogger(__name__ + ".index_to_coordinates").setLevel(logging.INFO)
-        logging.getLogger(__name__ + ".optimize_molecule").setLevel(logging.INFO)
-        logging.getLogger(__name__ + ".get_possible_atom_types").setLevel(logging.INFO)
-        logging.getLogger(__name__ + ".select_good_molecules").setLevel(logging.INFO)
+        # Change it for precise logging control
+        # logging.getLogger(__name__ + ".dfs").setLevel(logging.DEBUG)
+        # logging.getLogger(__name__ + ".add_atoms").setLevel(logging.DEBUG)
+        # logging.getLogger(__name__ + ".get_max_indices").setLevel(logging.DEBUG)
+        # logging.getLogger(__name__ + ".index_to_coordinates").setLevel(logging.DEBUG)
+        # logging.getLogger(__name__ + ".optimize_molecule").setLevel(logging.DEBUG)
+        # logging.getLogger(__name__ + ".get_possible_atom_types").setLevel(logging.DEBUG)
+        # logging.getLogger(__name__ + ".dfs_select_good_molecules").setLevel(logging.DEBUG)
 
     def tensor_to_molecule(self, tensor, **kwargs):
-        """Transform density tensor into struct.
+        """Transform density tensor into Molecule object.
 
         Arguments:
         tensor -- 4D tf.tensor [x, y, z, c], where c -- channels.
@@ -140,57 +153,53 @@ class Fitter:
         best_molecules = MoleculeHeap(self.best_max)
         current_molecule = Molecule()
         try:
-            self._bfs(tensor, current_molecule, best_molecules, **kwargs)
+            self._dfs(tensor, current_molecule, best_molecules, **kwargs)
         except KeyboardInterrupt:
             pass
-        pairs = best_molecules.get_pairs()
-        return sorted(pairs, key=lambda pair: pair[0])
+        return best_molecules.get_pairs()
 
-    def _bfs(self, original_tensor, current_molecule, best_molecules, **kwargs):
-        """BFS step for the fitting procedure.
+    def _dfs(self, original_tensor, current_molecule, best_molecules, **kwargs):
+        """DFS step for the fitting procedure.
 
         Each step tries to add up to self.max_atom_by_step atoms into maximal density points.
 
         Arguments:
-        tensor -- original 4D tf.tensor [x, y, z, c], where c -- channels.
+        original_tensor -- original 4D tf.tensor [x, y, z, c], where c -- channels.
         current_molecule -- Molecule object to add atoms to.
         best_molecules -- heap with top molecules.
         """
-        logger = logging.getLogger(__name__ + '.bfs')
+        logger = logging.getLogger(__name__ + '.dfs')
 
         # Tensor of the difference between the original tensor and the density tensor of the current_molecule
         current_tensor = original_tensor - self.molecule_to_tensor(current_molecule)
         current_norm = tf.norm(current_tensor)
-        logger.debug("Current norm:" + str(current_norm))
+        logger.debug("Current norm:" + str(float(current_norm)))
         if best_molecules.heap:
-            current_best = str(-best_molecules.heap[-1][0])
-        else:
-            current_best = str(float(current_norm))
-        logger.info("BFS step. Depth: " + str(len(current_molecule)) + " Best norm: " + current_best)
+            logger.info("DFS step. Depth: " + str(len(current_molecule)) + " Best norm: " + str(-best_molecules.heap[-1][0]))
 
         new_molecules = self._add_atoms(current_molecule, current_tensor)
-        logger.debug("New molecules: " + str(len(new_molecules)) + ", " + str([str(molecule) for molecule in new_molecules]))
 
-        # Molecules for the next bfs step
+        # Molecules for the next dfs step
         good_molecules = []
         for molecule in new_molecules:
-            molecule, norm = self._optimize_molecule(molecule, original_tensor)
-            #norm = tf.norm(original_tensor - self.molecule_to_tensor(molecule))
-            logger.debug("Molecule: " + str(molecule) + " Norm: " + str(norm))
+            if self.optimization_is_on:
+                molecule, norm = self._optimize_molecule(molecule, original_tensor)
+            else:
+                norm = tf.norm(original_tensor - self.molecule_to_tensor(molecule))
+                logger.debug("Molecule: " + str(molecule) + " Norm: " + str(norm))
             if norm < current_norm:
                 good_molecules.append((molecule, norm))
-        logger.debug("Molecules with lower norm: " + str(len(good_molecules)) + ", " + str([str(molecule[0]) + str(molecule[1]) for molecule in good_molecules]))
 
-        good_molecules = self._select_good_molecules(good_molecules, best_molecules)
-        logger.debug("Molecules for the next bfs step: " + str(len(good_molecules)) + ", " + str([str(molecule) for molecule in good_molecules]))
+        # Additional filtering of molecules
+        good_molecules = self._dfs_select_good_molecules(good_molecules, best_molecules)
         for molecule in good_molecules:
-            self._bfs(original_tensor, molecule, best_molecules, **kwargs)
+            self._dfs(original_tensor, molecule, best_molecules, **kwargs)
 
     def _add_atoms(self, current_molecule, current_tensor):
         """Creates molecules by adding up to self.max_atoms_per_step atoms into the current molecule.
 
-        For example, if self.max_atoms_per_step is 2, it will create molecules with an atom at the top-1
-        density point, then add an atom at the top-2 point to the copy of them.
+        For example, if self.max_atoms_per_step is 2, it will create molecules M with an atom at the top-1
+        density point and then will add an atom at the top-2 point to the copy of created molecules M.
 
         Arguments:
         current_molecule -- Molecule object to add atoms to.
@@ -200,7 +209,6 @@ class Fitter:
 
         # Indices of maximal density points
         max_indices = self._get_max_indices(current_tensor)
-        logger.debug("Max indices: " + str(len(max_indices)) + ", " + str(max_indices))
 
         molecules = []
         last_layer_molecules = [current_molecule]
@@ -228,25 +236,25 @@ class Fitter:
         # Since we are looking for different xyz coordinates, select only maximum by channel axis
         max_channels = tf.math.reduce_max(tensor, axis=-1)
 
-        # Haven't been tested for non-square shape
-        x_dim, y_dim, z_dim = max_channels.shape
-
+        # Make tensor flat
         max_channels = tf.reshape(max_channels, [-1])
-        _, top_k_indices = tf.math.top_k(max_channels, k=self.max_atom_by_step)
-        logger.debug("Top k indices:" + str(len(top_k_indices)) + ", " + str(top_k_indices))
+
+        _, top_k_indices = tf.math.top_k(max_channels, k=self.max_atom_by_dfs_step)
+        logger.debug("Top k flat indices:" + str(top_k_indices))
 
         # For each maximal voxel, we will select voxels with the same density by random.
         # If we have one such voxel, we will select it. But if there are many, it will increase sparseness of new atoms.
-        # It's especially important for the first step, since there are many 1.0 voxels.
+        # It's especially important for the first step, since there are may be many 1.0 voxels.
         result_indices = []
         for max_index in top_k_indices:
             same_good_indices = tf.where(max_channels == max_channels[max_index])
             same_good_indices = tf.random.shuffle(same_good_indices)
             for index in same_good_indices:
                 if int(index) not in result_indices:
+                    # Turn index back to 3D
                     result_indices.append(np.unravel_index(int(index), tensor.shape[:-1]))
                     break
-        logger.debug("Result indices: " + str(len(result_indices)) + ", " + str(result_indices))
+        logger.debug("Result indices: " + str(result_indices))
         return result_indices
 
 
@@ -265,20 +273,21 @@ class Fitter:
         to has low density of channel if atom with such channel is presented.
         """
         logger = logging.getLogger(__name__ + ".get_possible_atom_types")
+        logger.debug("Input channels: " + str(channels))
+
         current_channels = set()
         for i, channel in enumerate(channels):
             if channel > self.threshold:
                 current_channels.add(i)
-        logger.debug("Current channels: " + str(len(current_channels)) + ", " + str(current_channels))
+        logger.debug("Current channels: " + str(current_channels))
 
         possible_atom_types = []
         for atom_type, (_, atom_channels) in self.atom_type_to_descriptor.items():
             if atom_channels.issubset(current_channels):
                 possible_atom_types.append(atom_type)
-        logger.debug("Possible atom types: " + str(len(possible_atom_types)) + ", " + str(possible_atom_types))
+        logger.debug("Possible atom types: " + str(possible_atom_types))
 
         return possible_atom_types
-
 
     def _optimize_molecule(self, molecule, original_tensor, **kwargs):
         """Optimize coordinates of atoms in the molecule, so its density is looks like the original tensor.
@@ -286,17 +295,29 @@ class Fitter:
         logger = logging.getLogger(__name__ + ".optimize_molecule")
 
         def norm_of_difference(coordinates, *args):
+            """ Target function to minimize.
+            Gets a tuple (original_tensor, molecule, mol_to_ten) as *args.
+
+            coordinates -- 3*n vector of molecule's atoms coordinates.
+            original_tensor -- original density tensor.
+            molecule -- molecule to optimize
+            mol_to_ten -- function converting molecule into tensor
+            """
+            # logger.debug("Coor: " + str(coordinates))
             original_tensor, molecule, molecule_to_tensor_func = args
-            molecule = copy.deepcopy(molecule)
+            molecule = deepcopy(molecule)
             for i, atom in enumerate(molecule.atoms):
                 new_coordinates = Coordinates(coordinates[3 * i + 0],
                                               coordinates[3 * i + 1],
                                               coordinates[3 * i + 2])
                 atom.coordinates = new_coordinates
             result_tensor = molecule_to_tensor_func(molecule)
-            return float(tf.norm(original_tensor - result_tensor))
+            norm = float(tf.norm(original_tensor - result_tensor))
+            # logger.debug("Target f: " + str(norm))
+            return norm
 
-        x_bond, y_bond, z_bond = (np.array(original_tensor.shape[:-1])  / 2) * self.voxel_size
+        # Bonds, so fitted atoms won't leave the tensor
+        x_bond, y_bond, z_bond = (np.array(original_tensor.shape[:-1]) / 2) * self.voxel_size
 
         coordinates = np.zeros(3 * len(molecule))
         bounds = []
@@ -320,9 +341,11 @@ class Fitter:
                           x0=coordinates,
                           args=(original_tensor, molecule, self.molecule_to_tensor),
                           bounds=bounds,
-                          method="Nelder-Mead",
+                          method='L-BFGS-B',
                           tol=self.optimization_tolerance,
-                          options={'maxiter' : self.optimization_maxiter})
+                          options={'maxiter' : self.optimization_maxiter,
+                                   'gtol': 1e-09,
+                                   'eps': 1e-4})
 
         for i, atom in enumerate(molecule.atoms):
             new_coordinates = Coordinates(result.x[3 * i + 0],
@@ -331,24 +354,28 @@ class Fitter:
             atom.coordinates = new_coordinates
         logger.debug("Final norm: " + str(result.fun))
         logger.debug("Total iterations: " + str(result.nit))
-        logger.debug("Optimizer message: " + result.message)
+        logger.debug("Message: " + str(result.message))
 
         return molecule, result.fun
 
-    def _select_good_molecules(self, good_molecules, best_molecules):
-        """Select molecules for the next round of bfs.
+    def _dfs_select_good_molecules(self, good_molecules, best_molecules):
+        """Select molecules for the next round of dfs.
+
+        At the moment it selects top self.max_molecules_by_dfs_step molecules.
 
         Arguments:
         good_molecules -- list of pairs (molecule, norm of its tensor)
         """
-        logger = logging.getLogger(__name__ + ".select_good_molecules")
-        new_good_molecules = MoleculeHeap(self.max_molecules_by_step)
+        logger = logging.getLogger(__name__ + ".dfs_select_good_molecules")
+
+        new_good_molecules = MoleculeHeap(self.max_molecules_by_dfs_step)
         for molecule, norm in good_molecules:
             best_molecules.add(molecule, -norm)
             if len(molecule) < self.max_atoms:
                 new_good_molecules.add(molecule, -norm)
-        logger.debug("Good molecules: " + str(len(new_good_molecules)) + ", " + str([str(molecule) for molecule in new_good_molecules.get_items()]))
-        logger.debug("Best molecules: " + str(len(best_molecules)) + ", " + str([str(molecule) for molecule in best_molecules.get_items()]))
+        logger.debug("Good molecules: " + str([str(molecule) for molecule in new_good_molecules.get_items()]))
+        logger.debug("Norms of good molecules: " + str([norm for (norm, _) in new_good_molecules.get_pairs()]))
+        logger.debug("Best molecules: " + str([str(molecule) for molecule in best_molecules.get_items()]))
         return new_good_molecules.get_items()
 
 
