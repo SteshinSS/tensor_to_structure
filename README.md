@@ -7,7 +7,7 @@ While there is software for generating voxels (like [libmolgrid](https://gnina.g
 ## How is it works
 The algorithm is computationally heavy, so I prepared two versions. The *tensor_to_structure/v1* is a general-purpose library with minimal assumptions about the problem. The *tensor_to_structure/v2* library was developed for a gaussian mixture model. Use the second only if you model an atom's density by a normal distribution, otherwise use *tensor_to_structure/v1*.
 
-**Warning**: It didn't intend to be published. There are tutorials, and the code is documented, but I shared it only for myself and won't maintain it.
+**Warning**: It didn't intend to be published. There are tutorials, and the code is documented, but I shared it for myself only and won't maintain it.
 
 ## Literature
 
