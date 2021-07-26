@@ -371,16 +371,17 @@ def rdkit_to_molecule(rdkit_molecule):
 
 
 if __name__=='__main__':
-    import utils
-    print('Running smoke tests')
+    import tts.utils
+    print('Running smoke tests...')
     molecule = Chem.MolFromSmiles('CCC')
-    molecule = Chem.AllChem.EmbedMolecule(molecule)
-    molecule = Chem.AllChem.UFFOptimizeMolecule(molecule)
+    molecule = Chem.AddHs(molecule)
+    Chem.AllChem.EmbedMolecule(molecule)
+    Chem.AllChem.UFFOptimizeMolecule(molecule)
     molecule = Chem.RemoveHs(molecule)
 
     my_molecule = rdkit_to_molecule(molecule)
     descriptors = {6: AtomDescriptor(1.0, {0})}
-    original_tensor = utils.test_voxelizer(my_molecule, descriptors)
+    original_tensor = tts.utils.test_voxelizer(my_molecule, descriptors)
     results = tensor_to_structure(original_tensor,
                                   descriptors,
                                   voxel_step=0.5,
@@ -395,4 +396,9 @@ if __name__=='__main__':
     result = get_bonds(results[0][0], get_distance_c, maximal_valence)
     rms = get_best_rms(result, molecule)
     ecpf = get_ecfp_similarity(result, molecule)
-    print(rms, ecpf)
+    print('RMS:', rms, 'ECPF:', ecpf)
+    assert rms < 0.5
+    assert ecpf[0] > 0.9
+    assert ecpf[1] > 0.9
+    assert ecpf[2] > 0.9
+    print('Smoke test successfully passed')
