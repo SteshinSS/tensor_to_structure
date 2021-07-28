@@ -228,7 +228,7 @@ def tensor_to_structure(tensor,
     return result
 
 
-def estimate_total_atoms(tensor, radius=1, epsilon=0.1):
+def estimate_total_atoms(tensor, radius=3, epsilon=0.1):
     """
     Greedy algorithm to estimate number of atoms in the density tensor.
     Select voxels with density: (density < 1.0 + epsilon) & (density > 1.0 - epsilon)
@@ -252,8 +252,7 @@ def estimate_total_atoms(tensor, radius=1, epsilon=0.1):
         for i in range(total_idx):
             true_index = np.array((idx[0][i], idx[1][i], idx[2][i]))
             if np.linalg.norm(true_index - atom_center) < radius:
-                tensor[true_index] = False
-        tensor = (tensor > 1.0 - epsilon) & (tensor < 1.0 + epsilon)
+                tensor[true_index[0]][true_index[1]][true_index[2]] = False
         idx = np.where(tensor)
         n_atoms += 1
     return n_atoms
